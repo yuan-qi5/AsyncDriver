@@ -16,7 +16,7 @@ from nuplan.common.actor_state.state_representation import Point2D
 import multiprocessing
 
 import warnings
-warnings.filterwarnings("ignore")
+warnings.filterwarnings("ignore") # 用于忽略所有警告信息，以保持日志或控制台输出简洁
 
 class DirectionDecision:
     GO_STRAIGHT = 'go_straight'
@@ -28,10 +28,10 @@ class DataProcessor(object):
     def __init__(self, scenarios):
         self._scenarios = scenarios
 
-        self.past_time_horizon = 2 # [seconds]
-        self.num_past_poses = 10 * self.past_time_horizon 
-        self.future_time_horizon = 8 # [seconds]
-        self.num_future_poses = 10 * self.future_time_horizon
+        self.past_time_horizon = 2 # [seconds] 向前回溯时间长度
+        self.num_past_poses = 10 * self.past_time_horizon # 回溯轨迹点数，采样率为 10 HZ
+        self.future_time_horizon = 8 # [seconds] 向后预测时间长度
+        self.num_future_poses = 10 * self.future_time_horizon # 向后预测点数，采样率为 10 HZ
         self.num_agents = 20
 
         self._map_features = ['LANE', 'ROUTE_LANES', 'CROSSWALK'] # name of map features to be extracted.
@@ -40,6 +40,7 @@ class DataProcessor(object):
         self._radius = 60 # [m] query radius scope relative to the current pose.
         self._interpolation_method = 'linear' # Interpolation method to apply when interpolating to maintain fixed size map elements.
 
+    # 返回过去到现在的状态 tensor，时间戳 tensor
     def get_ego_agent(self, iteration=None):
         # self.anchor_ego_state = self.scenario.initial_ego_state
         self.anchor_ego_state = self.current_ego_state
@@ -60,10 +61,13 @@ class DataProcessor(object):
         past_time_stamps_tensor = sampled_past_timestamps_to_tensor(past_time_stamps)
 
         return past_ego_states_tensor, past_time_stamps_tensor
-    
+
+    # 返回 ：按时间顺序的邻居实体特征张量列表和按时间顺序的邻居实体类型列表
     def get_neighbor_agents(self, iteration=None):
         # present_tracked_objects = self.scenario.initial_tracked_objects.tracked_objects
+        # 返回指定 iteration 的跟踪数据对象，.tracked_objects 是其中保存的当前所有 agnet 的数据
         present_tracked_objects = self.scenario.get_tracked_objects_at_iteration(iteration=iteration).tracked_objects
+        # 返回每个过去时刻的 .tracked_objects 列表，得到历史帧对象
         past_tracked_objects = [
             tracked_objects.tracked_objects
             for tracked_objects in self.scenario.get_past_tracked_objects(
@@ -72,16 +76,19 @@ class DataProcessor(object):
         ]
 
         sampled_past_observations = past_tracked_objects + [present_tracked_objects]
+        # \ 是 Python 的行连接符（续行符）：让一行代码在视觉上分成多行书写，但逻辑上仍是一行代码
         past_tracked_objects_tensor_list, past_tracked_objects_types = \
-              sampled_tracked_objects_to_tensor_list(sampled_past_observations)
+              sampled_tracked_objects_to_tensor_list(sampled_past_observations) 
 
         return past_tracked_objects_tensor_list, past_tracked_objects_types
-
+    
+    # 返回一个向量化地图表示 
     def get_map(self, iteration=None): 
         # ego_state = self.scenario.initial_ego_state  
         ego_state = self.current_ego_state    
         ego_coords = Point2D(ego_state.rear_axle.x, ego_state.rear_axle.y)
-        route_roadblock_ids = self.scenario.get_route_roadblock_ids()
+        # 获取当前规划路径上的 “路径 ID”，可对地图要素进行语义筛选，以忽略与当前车辆路线无关的路段，减少冗余
+        route_roadblock_ids = self.scenario.get_route_roadblock_ids() 
         traffic_light_data = self.scenario.get_traffic_light_status_at_iteration(iteration)
 
         coords, traffic_light_data = get_neighbor_vector_set_map(
@@ -93,6 +100,7 @@ class DataProcessor(object):
 
         return vector_map
 
+    # 返回未来的相对轨迹点
     def get_ego_agent_future(self,iteration=None):
         # current_absolute_state = self.scenario.initial_ego_state
         current_absolute_state = self.current_ego_state
@@ -108,6 +116,7 @@ class DataProcessor(object):
 
         return trajectory_relative_poses
 
+    # 返回 命令列表、对应距离列表、指令（option）
     def get_instruction(self, ego_future_poses, threshold=0.5, return_prompt=False):
         dis_norm = np.linalg.norm(np.diff(ego_future_poses[:,:-1], n=1, axis=0), axis=1)
         dis_cum = np.cumsum(dis_norm, axis=0)
@@ -115,8 +124,8 @@ class DataProcessor(object):
         cur_cmd = None
         cur_dis = 0
         instruction = ''
-        cmd_ls = []
-        dis_ls = []
+        cmd_ls = [] # 存访命令序列
+        dis_ls = [] # 存访对应每条命令的距离
         tmp_dis_ls = []
         time_ls = []
         for heading, (idx, dis), d_n in zip(ego_future_poses[1:,2], enumerate(dis_cum), dis_norm):
@@ -136,10 +145,12 @@ class DataProcessor(object):
                 if 'stop' not in cur_cmd:
                     cur_dis = dis_cum[idx-1]
                 cur_cmd = cmd
-        
+
+        # 收尾最后一段命令
         cmd_ls.append(cur_cmd)
         dis_ls.append(np.round(dis-cur_dis, 2))
 
+        # 拼接自然语言提示
         if return_prompt:
             for c, d in zip(cmd_ls, dis_ls):
                 instruction += c
