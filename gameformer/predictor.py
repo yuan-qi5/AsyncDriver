@@ -94,7 +94,7 @@ class Decoder(nn.Module):
 
         return decoder_outputs, env_encoding
 
-
+# 返回 (B, 80, 2) 的张量，预测的未来 80 个时刻的坐标轨迹 (x,y)
 class NeuralPlanner(nn.Module):
     def __init__(self):
         super(NeuralPlanner, self).__init__()
@@ -105,8 +105,8 @@ class NeuralPlanner(nn.Module):
 
     def forward(self, env_encoding, route_lanes):
         route_lanes, mask = self.route_encoder(route_lanes)
-        mask[:, 0] = False
-        env_encoding = torch.max(env_encoding, dim=1, keepdim=True)[0]
+        mask[:, 0] = False  # 强制屏蔽第 0 条 lane
+        env_encoding = torch.max(env_encoding, dim=1, keepdim=True)[0] 
         route_encoding = self.route_fusion(env_encoding, route_lanes, route_lanes, mask)
         env_route_encoding = torch.cat([env_encoding, route_encoding], dim=-1)
         plan = self.plan_decoder(env_route_encoding.squeeze(1))
