@@ -116,7 +116,7 @@ class DataProcessor(object):
 
         return trajectory_relative_poses
 
-    # 返回 命令列表、对应距离列表、指令（option）
+    # 返回 命令列表和对应距离列表拼成的列表、指令（option）
     def get_instruction(self, ego_future_poses, threshold=0.5, return_prompt=False):
         dis_norm = np.linalg.norm(np.diff(ego_future_poses[:,:-1], n=1, axis=0), axis=1)
         dis_cum = np.cumsum(dis_norm, axis=0)
@@ -159,7 +159,7 @@ class DataProcessor(object):
         
         return [cmd_ls, dis_ls], instruction
     
-    
+    # 返回：包含从当前时刻起至未来各等间隔时刻，各邻居代理相对于自车坐标系下的轨迹及
     def get_neighbor_agents_future(self, agent_index, iteration=None):
         # current_ego_state = self.scenario.initial_ego_state
         # present_tracked_objects = self.scenario.initial_tracked_objects.tracked_objects
@@ -180,31 +180,37 @@ class DataProcessor(object):
 
         return agent_futures
     
+    # 分层绘制（底图 --> 主体 --> 轨迹） + 等比例显示
     def plot_scenario(self, data):
         # Create map layers
+        # 将车道线、人行横道、路径车道渲染到同一张画布上
         create_map_raster(data['lanes'], data['crosswalks'], data['route_lanes'])
 
         # Create agent layers
-        create_ego_raster(data['ego_agent_past'][-1])
-        create_agents_raster(data['neighbor_agents_past'][:, -1])
+        create_ego_raster(data['ego_agent_past'][-1]) # 自车当前（最后一帧）位置
+        create_agents_raster(data['neighbor_agents_past'][:, -1]) # 邻居当前（最后一帧）位置
 
         # Draw past and future trajectories
         draw_trajectory(data['ego_agent_past'], data['neighbor_agents_past'])
         draw_trajectory(data['ego_agent_future'], data['neighbor_agents_future'])
 
+        # plt.gca(): 获取当前坐标轴（Axes）对象， set_aspect('equal') x 轴和 y 轴缩放比例设为 1：1
         plt.gca().set_aspect('equal')
-        plt.tight_layout()
+        plt.tight_layout() # 自动调整子图参数，使各元素不会重叠
 
     def save_to_disk(self, dir, data):
         np.savez(f"{dir}/np_data/{data['map_name']}_{data['token']}_{data['iter']}.npz", **data)
 
+    # debug :
     def work(self, save_dir, debug=False, start_s=None):
         prompt_data_ls = []
         save_itr = 100
         scenario_ls = self._scenarios[start_s:start_s+save_itr]
         # debug_ls = os.listdir(f"{save_dir}/map_v2")
+        # 遍历每个场景 ii 为编号，共 save_iter = 100 个
         for ii, scenario in enumerate(scenario_ls):
-            print(f"Processing scenario: {ii}/{len(scenario_ls)}", flush=True)
+            print(f"Processing scenario: {ii}/{len(scenario_ls)}", flush=True) 
+            # 遍历该场景中每个时刻（帧）
             for iter in tqdm(range(len(scenario._lidarpc_tokens))):
                 # if iter%80!=0:
                 #     continue
@@ -214,7 +220,7 @@ class DataProcessor(object):
                 self.map_api = scenario.map_api  
                 self.current_ego_state = scenario.get_ego_state_at_iteration(iter)      
 
-                # get agent past tracks
+                # get agent (ego and neighbor) past tracks
                 ego_agent_past, time_stamps_past = self.get_ego_agent(iteration=iter)
                 neighbor_agents_past, neighbor_agents_types = self.get_neighbor_agents(iteration=iter)
                 ego_agent_past, neighbor_agents_past, neighbor_indices = \
@@ -224,14 +230,15 @@ class DataProcessor(object):
                 vector_map = self.get_map(iteration=iter)
 
                 # get agent future tracks
-                ego_agent_future = self.get_ego_agent_future(iteration=iter)
-                instruction, prompt = self.get_instruction(ego_agent_future, return_prompt=True)
-                neighbor_agents_future = self.get_neighbor_agents_future(neighbor_indices, iteration=iter)
+                ego_agent_future = self.get_ego_agent_future(iteration=iter) # 返回未来的相对轨迹点
+                instruction, prompt = self.get_instruction(ego_agent_future, return_prompt=True) # 返回 命令-距离列表和指令列表
+                neighbor_agents_future = self.get_neighbor_agents_future(neighbor_indices, iteration=iter) # 返回指定索引 neighbor_indices 对应 agent 的未来轨迹
                 
                 # for ego_v_a_predictor
                 # current_ego_state = scenario.get_ego_state_at_iteration(iter)
+                # 从 current_ego_state 中分别提取后轴线速度和加速度，再拼接为 current_v_a
                 current_ego_state = self.current_ego_state
-                cur_v = current_ego_state.dynamic_car_state.rear_axle_velocity_2d
+                cur_v = current_ego_state.dynamic_car_state.rear_axle_velocity_2d 
                 current_v = np.array([cur_v.x, cur_v.y])
                 cur_a = current_ego_state.dynamic_car_state.rear_axle_acceleration_2d
                 current_a = np.array([cur_a.x, cur_a.y])
@@ -242,11 +249,14 @@ class DataProcessor(object):
                 if current_lane is None:
                     continue
                 neighbour_lane_id = current_lane.adjacent_edges
+                # 用 1,0 表示左/右侧各自是否存在相邻车道
                 left_lane = np.array([1]) if neighbour_lane_id[0] is not None else np.array([0])
                 right_lane = np.array([1]) if neighbour_lane_id[1] is not None else np.array([0])
                 neighbour_lane = np.array([left_lane, right_lane])
                 
-                # acc_classification
+                # acceleration_classification 加减速判断
+                # 用当前速度向量 current_v 与 0.5s 后加速度向量内积判断 
+                # 正值且明显 --> 加速，负值且明显 --> 减速，否则：保持速度
                 ego_future_state = scenario.get_ego_future_trajectory(iter, time_horizon=0.5, num_samples=1)
                 future_acc = [s.dynamic_car_state.rear_axle_acceleration_2d.array for s in ego_future_state][0]
                 dot_product = current_v[0] * future_acc[0] + current_v[1] * future_acc[1]
@@ -258,6 +268,7 @@ class DataProcessor(object):
                     acc_classification = np.array([0,0,1]) #keep
                 
                 # lane_change
+                # 在给定 5s, 50 个采样点的未来轨迹，检测是否发生变道，用 [1]/[0] 标记 “变道” 或 “未变道”
                 ego_future_state_long_horizon = scenario.get_ego_future_trajectory(iter, time_horizon=5, num_samples=50)
                 ego_future_state_long_horizon = [s for s in ego_future_state_long_horizon]
                 lane_change_data = find_lane_change(ego_future_state_long_horizon, self.map_api) # list of LaneChangeData, include duration, start lane, final lane...
@@ -268,6 +279,10 @@ class DataProcessor(object):
             
                 # traffic light
                 # current_lane = find_current_lane(map_api, current_ego_state.car_footprint.center)
+                # 返回解释：
+                # traffic_light_for_lanes : 针对左右车道的 one-hot 灯色编码
+                # ego_lane_flag : 自车当前车道是否有信号灯
+                # distance : 自车到信号灯的距离
                 traffic_light_ls = scenario.get_traffic_light_status_at_iteration(iter)
                 traffic_light_for_lanes, ego_lane_flag, distance = encode_traffic_light(current_lane, traffic_light_ls, current_ego_state.car_footprint.center) # traffic_light_for_lanes is one hot vector
 
