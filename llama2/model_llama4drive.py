@@ -164,11 +164,12 @@ class CausalLMOutputWithPastWithModel(CausalLMOutputWithPast):
     plan: Optional[Tuple[torch.FloatTensor]] = None
     llm_plan: Optional[Tuple[torch.FloatTensor]] = None
 
-
+# RMSNorm : 与 LayerNorm 相比不减均值，没有偏置，速度更快，大型 transformer 中性能相当
 class LlamaRMSNorm(nn.Module):
     def __init__(self, hidden_size, eps=1e-6):
         """
         LlamaRMSNorm is equivalent to T5LayerNorm
+        hidden_size : 进行归一化的维度尺寸
         """
         super().__init__()
         self.weight = nn.Parameter(torch.ones(hidden_size))
@@ -176,7 +177,7 @@ class LlamaRMSNorm(nn.Module):
 
     def forward(self, hidden_states):
         input_dtype = hidden_states.dtype
-        hidden_states = hidden_states.to(torch.float32)
+        hidden_states = hidden_states.to(torch.float32) # 避免低精度在开平方、倒数带来较大误差
         variance = hidden_states.pow(2).mean(-1, keepdim=True)
         hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
         return self.weight * hidden_states.to(input_dtype)
