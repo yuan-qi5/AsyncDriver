@@ -64,6 +64,7 @@ logger = logging.getLogger(__name__)
 
 _CONFIG_FOR_DOC = "LlamaConfig"
 
+# Optional[...] 等价于 Union[..., None]，表示这个值要么是指定类型，要么是 None。
 @dataclass
 class BaseModelOutputWithPastDrive(ModelOutput):
     last_hidden_state: torch.FloatTensor = None
@@ -89,9 +90,11 @@ def _make_causal_mask(
     if past_key_values_length > 0:
         mask = torch.cat([torch.zeros(tgt_len, past_key_values_length, dtype=dtype, device=device), mask], dim=-1)
     return mask[None, None, :, :].expand(bsz, 1, tgt_len, tgt_len + past_key_values_length)
-
+    # batch_size, 1 个 attention head 维度占位， query 长度，key 长度
 
 # Copied from transformers.models.bart.modeling_bart._expand_mask
+# tgt_seq_len : target sequence length 即 “解码端” 序列长度
+# src_seq_len : source sequence length 即 “编码端” 序列长度
 def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: Optional[int] = None):
     """
     Expands attention_mask from `[bsz, seq_len]` to `[bsz, 1, tgt_seq_len, src_seq_len]`.
@@ -106,6 +109,8 @@ def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: Optional[int] 
     return inverted_mask.masked_fill(inverted_mask.to(torch.bool), torch.finfo(dtype).min)
 
 
+# CausalLM (因果语言模型) Output(用于存储输出的类) 
+# WithPast(包含 past key values) WithModel(包含模型信息)
 @dataclass
 class CausalLMOutputWithPastWithModel(CausalLMOutputWithPast):
     """
