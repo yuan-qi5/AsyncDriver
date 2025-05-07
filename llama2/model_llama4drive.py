@@ -185,13 +185,15 @@ class LlamaRMSNorm(nn.Module):
 
 class LlamaRotaryEmbedding(torch.nn.Module):
     def __init__(self, dim, max_position_embeddings=2048, base=10000, device=None):
+        """
+        max_position_embedding : 预先缓存的最大序列长度
+        """
         super().__init__()
-
         self.dim = dim
         self.max_position_embeddings = max_position_embeddings
         self.base = base
         inv_freq = 1.0 / (self.base ** (torch.arange(0, self.dim, 2).float().to(device) / self.dim))
-        self.register_buffer("inv_freq", inv_freq, persistent=False)
+        self.register_buffer("inv_freq", inv_freq, persistent=False) # persistent : 是否被存进 state_dict
 
         # Build here to make `torch.jit.trace` work.
         self._set_cos_sin_cache(
@@ -199,7 +201,7 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         )
 
     def _set_cos_sin_cache(self, seq_len, device, dtype):
-        self.max_seq_len_cached = seq_len
+        self.max_seq_len_cached = seq_len  
         t = torch.arange(self.max_seq_len_cached, device=device, dtype=self.inv_freq.dtype)
 
         freqs = torch.einsum("i,j->ij", t, self.inv_freq)
@@ -219,6 +221,7 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         )
 
 
+# 通过对位置 t 除以一个线性缩放因子，减缓相位变化速率，从而延长上下文
 class LlamaLinearScalingRotaryEmbedding(LlamaRotaryEmbedding):
     """LlamaRotaryEmbedding extended with linear scaling. Credits to the Reddit user /u/kaiokendev"""
 
@@ -238,6 +241,7 @@ class LlamaLinearScalingRotaryEmbedding(LlamaRotaryEmbedding):
         self.register_buffer("sin_cached", emb.sin()[None, None, :, :].to(dtype), persistent=False)
 
 
+# 对位置 t 按照神经切线核(Neural Tangent Kernel)理论推进的比例进行动态缩放
 class LlamaDynamicNTKScalingRotaryEmbedding(LlamaRotaryEmbedding):
     """LlamaRotaryEmbedding extended with Dynamic NTK scaling. Credits to the Reddit users /u/bloc97 and /u/emozilla"""
 
@@ -273,6 +277,7 @@ def rotate_half(x):
 
 def apply_rotary_pos_emb(q, k, cos, sin, position_ids):
     # The first two dimensions of cos and sin are always 1, so we can `squeeze` them.
+    # position_ids : (bs, seq_len)
     cos = cos.squeeze(1).squeeze(0)  # [seq_len, dim]
     sin = sin.squeeze(1).squeeze(0)  # [seq_len, dim]
     cos = cos[position_ids].unsqueeze(1)  # [bs, 1, seq_len, dim]
@@ -281,26 +286,30 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids):
     k_embed = (k * cos) + (rotate_half(k) * sin)
     return q_embed, k_embed
 
-
+"""
+ Llama Transformer 中的 Feed-Forward Network ,FFN
+ 非线性变换 + 维度扩展与压缩 (hidden_size --> intermediate_size --> hidden_size)
+ proj 中不使用 bias : 已经通过 LayerNorm ；保障门控结构的数值稳定性，避免初期发生偏移；减少参数，加速
+"""
 class LlamaMLP(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
         self.hidden_size = config.hidden_size
         self.intermediate_size = config.intermediate_size
-        self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+        self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False) # SwiGLU 中生成门信号
         self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
         self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
         self.act_fn = ACT2FN[config.hidden_act]
 
     def forward(self, x):
-        if self.config.pretraining_tp > 1:
+        if self.config.pretraining_tp > 1:   # 即预训练阶段启用了 tensor parallelism（张量并行）
             slice = self.intermediate_size // self.config.pretraining_tp
             gate_proj_slices = self.gate_proj.weight.split(slice, dim=0)
             up_proj_slices = self.up_proj.weight.split(slice, dim=0)
             down_proj_slices = self.down_proj.weight.split(slice, dim=1)
 
-            gate_proj = torch.cat(
+            gate_proj = torch.cat(  
                 [F.linear(x, gate_proj_slices[i]) for i in range(self.config.pretraining_tp)], dim=-1
             )
             up_proj = torch.cat([F.linear(x, up_proj_slices[i]) for i in range(self.config.pretraining_tp)], dim=-1)
@@ -315,7 +324,9 @@ class LlamaMLP(nn.Module):
 
         return down_proj
 
-
+"""
+KV 复用（或 KV 压缩）
+"""
 def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     """
     This is the equivalent of torch.repeat_interleave(x, dim=1, repeats=n_rep). The hidden states go from (batch,
