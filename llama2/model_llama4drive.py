@@ -325,7 +325,8 @@ class LlamaMLP(nn.Module):
         return down_proj
 
 """
-KV 复用（或 KV 压缩）
+KV 复用（或 KV 压缩）：为节省计算与内存，对 K/V 做较少投影，数目为 num_key_value_heads，
+通过 n_rep 复制到 heads 数量 
 """
 def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     """
@@ -341,7 +342,14 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
 
 class LlamaAttention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
-
+    """
+    方法：
+    __init__ : 初始化
+    _init__rope : 判断使用 RoPE 类型
+    _shape : 进行连续内存的维度变换，out_size (bsz, num_head, seq_len, head_dim) # 方便对每个头进行独立地做注意力打分
+    forward :
+    """
+    
     def __init__(self, config: LlamaConfig):
         super().__init__()
         self.config = config
@@ -351,7 +359,7 @@ class LlamaAttention(nn.Module):
         self.num_key_value_heads = config.num_key_value_heads
         self.num_key_value_groups = self.num_heads // self.num_key_value_heads
         self.max_position_embeddings = config.max_position_embeddings
-        self.rope_theta = config.rope_theta
+        self.rope_theta = config.rope_theta # 控制旋转频率的超参数
 
         if (self.head_dim * self.num_heads) != self.hidden_size:
             raise ValueError(
@@ -361,8 +369,8 @@ class LlamaAttention(nn.Module):
         self.q_proj = nn.Linear(self.hidden_size, self.num_heads * self.head_dim, bias=False)
         self.k_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
         self.v_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
-        self.o_proj = nn.Linear(self.num_heads * self.head_dim, self.hidden_size, bias=False)
-        self._init_rope()
+        self.o_proj = nn.Linear(self.num_heads * self.head_dim, self.hidden_size, bias=False) # 多头拼接后线性变换
+        self._init_rope() # 判断使用 RoPE 类型
 
     def _init_rope(self):
         if self.config.rope_scaling is None:
@@ -405,6 +413,7 @@ class LlamaAttention(nn.Module):
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         bsz, q_len, _ = hidden_states.size()
 
+        # pretraining_tp : pretraining tensor parallelism
         if self.config.pretraining_tp > 1:
             key_value_slicing = (self.num_key_value_heads * self.head_dim) // self.config.pretraining_tp
             query_slices = self.q_proj.weight.split(
@@ -463,7 +472,7 @@ class LlamaAttention(nn.Module):
                 )
             attn_weights = attn_weights + attention_mask
 
-        # upcast attention to fp32
+        # upcast attention to fp32 , softmax 对数值稳定性要求较高，上调精度很常见
         attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
         attn_output = torch.matmul(attn_weights, value_states)
 
@@ -552,7 +561,7 @@ class LlamaDecoderLayer(nn.Module):
 
         return outputs
 
-
+# docstring : 嵌入在 Python 代码中的文档字符串，用于描述模块、类、函数或方法的功能
 LLAMA_START_DOCSTRING = r"""
     This model inherits from [`PreTrainedModel`]. Check the superclass documentation for the generic methods the
     library implements for all its model (such as downloading or saving, resizing the input embeddings, pruning heads
