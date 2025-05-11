@@ -745,7 +745,7 @@ class LlamaModel(LlamaPreTrainedModel):
         position_ids: Optional[torch.LongTensor] = None,
         past_key_values: Optional[List[torch.FloatTensor]] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
-        use_cache: Optional[bool] = None,
+        use_cache: Optional[bool] = None, # 即是否使用 KV 缓存
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
@@ -859,12 +859,15 @@ class LlamaModel(LlamaPreTrainedModel):
             attention_mask = torch.ones(
                 (batch_size, seq_length_with_past), dtype=torch.bool, device=inputs_embeds.device
             )
+        
+        # _prepare_decoder_attention_mask
         attention_mask = self._prepare_decoder_attention_mask(
             attention_mask, (batch_size, seq_length), inputs_embeds, past_key_values_length
         )
 
         hidden_states = inputs_embeds
 
+        # 训练时，梯度检查与 KV 缓存不兼容
         if self.gradient_checkpointing and self.training:
             if use_cache:
                 logger.warning_once(
@@ -873,6 +876,7 @@ class LlamaModel(LlamaPreTrainedModel):
                 use_cache = False
 
         # decoder layers
+        # 根据配置参数决定是否收集和返回某些中间结果或缓存
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
         next_decoder_cache = () if use_cache else None
@@ -936,7 +940,9 @@ class LlamaModel(LlamaPreTrainedModel):
 
 
 class LlamaForCausalLM(LlamaPreTrainedModel):
+    # 指定哪些权重是 "权重绑定的"，权重绑定，
     _tied_weights_keys = ["lm_head.weight"]
+    # 在进行混合精度训练时保持 fp32 精度
     _keep_in_fp32_modules = ['map_adapter',
                              'waypoints_fc',
                              'waypoints_predictor',
@@ -944,12 +950,13 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
                              'map_encoder',
                              'gameformer',
                              'ego_v_a_predictor',
-                             'neighbour_lane',
+                             'neighbour_lane', 
                              'acc_classification',
                              'lane_change',
                              'traffic_light',
                              'feature_adpter']
 
+    # 在微调预训练模型或训练包含不同性质组件的复杂模型时，对模型不同部分使用差异化的学习率
     _keep_small_lr_modules = [
             'gameformer',
         ]
