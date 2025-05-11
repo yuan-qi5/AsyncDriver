@@ -95,6 +95,7 @@ def _make_causal_mask(
 # Copied from transformers.models.bart.modeling_bart._expand_mask
 # tgt_seq_len : target sequence length 即 “解码端” 序列长度
 # src_seq_len : source sequence length 即 “编码端” 序列长度
+# 将 2D 的填充沿模扩展到与多头注意力机制兼容的 4D 形状
 def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: Optional[int] = None):
     """
     Expands attention_mask from `[bsz, seq_len]` to `[bsz, 1, tgt_seq_len, src_seq_len]`.
@@ -684,7 +685,7 @@ class LlamaModel(LlamaPreTrainedModel):
 
     def __init__(self, config: LlamaConfig):
         super().__init__(config)
-        self.padding_idx = config.pad_token_id
+        self.padding_idx = config.pad_token_id  # 获取填充词元的 id
         self.vocab_size = config.vocab_size
 
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
@@ -692,14 +693,19 @@ class LlamaModel(LlamaPreTrainedModel):
         self.norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.hidden_size = config.hidden_size
 
-        self.gradient_checkpointing = False
+        # 以计算换内存，当启用时，会在反向传播过程中重新计算一些中间值，
+        # 而不是存储所有激活值，可显著减少内存消耗，但会增加计算时间
+        self.gradient_checkpointing = False  
+        
         self.special_token_id = config.special_token_dict['<map>']
         # Initialize weights and apply final processing
         self.post_init()
 
+    # 提供一种标准化的方式来获取模型底层的输入词嵌入层
     def get_input_embeddings(self):
         return self.embed_tokens
 
+    # 允许外部代码修改或替换模型的输入词嵌入层
     def set_input_embeddings(self, value):
         self.embed_tokens = value
 
@@ -723,14 +729,15 @@ class LlamaModel(LlamaPreTrainedModel):
             )
             combined_attention_mask = (
                 expanded_attn_mask if combined_attention_mask is None else expanded_attn_mask + combined_attention_mask
-            )
+            ) # 只要任何一个掩码知识某个位置不应被注意，组合后的掩码也会指示该位置不应被注意
 
         return combined_attention_mask
 
-    @add_start_docstrings_to_model_forward(LLAMA_INPUTS_DOCSTRING)
+    # 装饰器作用 ：将一个预定义的文档字符串添加到 forward 的文档字符串的开头
+    @add_start_docstrings_to_model_forward(LLAMA_INPUTS_DOCSTRING) 
     def forward(
         self,
-        input_ids: torch.LongTensor = None,
+        input_ids: torch.LongTensor = None,  # 输入的词元，包含输入文本经过分词器处理后得到的数字序列
         map_feats: torch.FloatTensor = None,
         map_masks: torch.FloatTensor = None,
         labels: torch.LongTensor = None,
@@ -743,6 +750,8 @@ class LlamaModel(LlamaPreTrainedModel):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
     ) -> Union[Tuple, BaseModelOutputWithPast]:
+
+        # 使得模型行为即可通过全局配置（self.config）更改，又可通过单次调用时（forward）覆盖修改
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -753,7 +762,7 @@ class LlamaModel(LlamaPreTrainedModel):
         
         if past_key_values is not None:
             input_ids_clone = input_ids.clone()
-            input_ids = input_ids[:, -1:]
+            input_ids = input_ids[:, -1:] # 因为过去 kv 已经提供，为避免冗余计算，只需计算最后一个词元即可
 
         # retrieve input_ids and inputs_embeds
         if input_ids is not None and inputs_embeds is not None:
@@ -791,6 +800,7 @@ class LlamaModel(LlamaPreTrainedModel):
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
         
+        # 将 map_feats 插入到原始的 inputs_embeds 中的特定位置，并相应地调整 labels、position_ids、attention_mask
         loca = []
         if map_feats is not None and past_key_values is None:
             new_inputs_embeds = torch.zeros((batch_size, new_tokens_num, inputs_embeds.shape[-1]), device=input_ids.device).to(inputs_embeds.dtype)
@@ -799,17 +809,25 @@ class LlamaModel(LlamaPreTrainedModel):
             
             position_ids_bs = position_ids.shape[0]
             new_position_ids = torch.zeros((position_ids_bs, new_tokens_num), dtype=torch.long, device=input_ids.device)
-            
+
+            # 逐样本处理，batch_size 表示 inputs 的 batch_size
             for b in range(batch_size):
                 return_special_toks_loc = special_toks_loc
+                
+                # 将 map_feats 插入到特殊标记后
                 new_inputs_embeds[b, :special_toks_loc[b]+1] = inputs_embeds[b, :special_toks_loc[b]+1]
                 new_inputs_embeds[b, special_toks_loc[b]+1:special_toks_loc[b]+map_feats.shape[1]+1] = map_feats[b]
                 new_inputs_embeds[b, special_toks_loc[b]+map_feats.shape[1]+1:] = inputs_embeds[b, special_toks_loc[b]+1:]
+                
+                # 记录 map_feats 插入的起始索引（包含）和结束索引（不包含）存入 local 列表
                 loca.append((special_toks_loc[b]+1, special_toks_loc[b]+map_feats.shape[1]+1))
+                
                 if labels is not None:
                     new_labels[b, :special_toks_loc[b]+1] = labels[b, :special_toks_loc[b]+1]
+                    # 将 map_feats 对应的位置标签设置为 -100
                     new_labels[b, special_toks_loc[b]+1:special_toks_loc[b]+map_feats.shape[1]+1] = -100
                     new_labels[b, special_toks_loc[b]+map_feats.shape[1]+1:] = labels[b, special_toks_loc[b]+1:]
+
                 
                 if b < position_ids_bs:
                     new_position_ids[b, :special_toks_loc[b]+1] = position_ids[b, :special_toks_loc[b]+1]
@@ -818,7 +836,7 @@ class LlamaModel(LlamaPreTrainedModel):
                 
                 if attention_mask is not None:
                     new_inputs_attention_mask[b, :special_toks_loc[b]+1] = attention_mask[b, :special_toks_loc[b]+1]
-                    new_inputs_attention_mask[b, special_toks_loc[b]+1:special_toks_loc[b]+map_feats.shape[1]+1] = ~map_masks[b]
+                    new_inputs_attention_mask[b, special_toks_loc[b]+1:special_toks_loc[b]+map_feats.shape[1]+1] = ~map_masks[b] # 逻辑非
                     new_inputs_attention_mask[b, special_toks_loc[b]+map_feats.shape[1]+1:] = attention_mask[b, special_toks_loc[b]+1:]
             
             inputs_embeds = new_inputs_embeds
