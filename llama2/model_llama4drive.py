@@ -978,7 +978,8 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
         self.vocab_size = config.vocab_size
         self.feature_len = config.feature_len # number of waypoint, default=80
         # self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
-        
+
+        # 采用两层 MLP 
         # Add Map adapter layers
         self.map_insize = config.map_insize
         self.map_adapter = nn.Linear(self.map_insize, config.hidden_size, bias=False)
@@ -1031,6 +1032,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
             number_weight = config.number_weight
         except:
             number_weight = 1.0
+        # 词汇表加权掩码
         weighted_mask = torch.ones(config.vocab_size, dtype=torch.float32)
         if number_weight > 1:
             number_tokens = [
@@ -1052,6 +1054,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
+    # 控制模型中哪些参数是可训练的
     def reset_trainable_param(self):
         for name, param in self.named_parameters():
             if any(module_to_keep_in_fp32 in name for module_to_keep_in_fp32 in self._keep_in_fp32_modules):
@@ -1067,6 +1070,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
                 if 'lora' in name:
                     param.requires_grad = True
 
+    # 
     def reinit_weights(self):
         init_module_list = [name for name in self.adapter_name_list if hasattr(self, name)]
         for name in init_module_list:
@@ -1124,6 +1128,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
         self.map_encoder.to(self.model.device)
         self.to(self.model.device)
 
+    # 
     def reload_mapencoder_weights(self):
         self.reinit_weights()
         if self.config.mapEncoder_pretrain_weight is None:
@@ -1627,6 +1632,7 @@ class ModelWithLoRA(PeftModelForCausalLM):
         **kwargs,
     ) -> Union[Tuple, CausalLMOutputWithPastWithModel]:
 
+        # super() 是 Python 中一个内置函数，主要用于调用父类（也称超类或基类）的方法
         outputs = super().forward(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -1651,23 +1657,30 @@ class ModelWithLoRA(PeftModelForCausalLM):
     def load_weights(self, model_id):
         if model_id is None:
             print('!!!!  No model id, not loaded at all')
+            # python 中，return 用来终止当前函数的执行，并（可选地）向调用者返回一个值，若没有
+            # 指定返回值，会返回 None
             return
+        # 加载 LoRA 设配器权重
         lora_ckpt = os.path.join(model_id, "adapter_model.bin")
         lora_weights = torch.load(lora_ckpt)
         set_peft_model_state_dict(self, lora_weights)
         print('LoRA weights have been loaded')
 
+        # 加载 dir_path 中 'global' 目录和 'model'子目录 
         global_ckpt_ = [dir_path for dir_path in os.listdir(model_id) if 'global' in dir_path][0]
         global_ckpt_ = os.path.join(model_id, global_ckpt_)
         model_states = [dir_path for dir_path in os.listdir(global_ckpt_) if 'model' in dir_path][0]
         model_ckpt_ = os.path.join(global_ckpt_, model_states)
         model_weights = torch.load(model_ckpt_)['module']
+        
+        # 检查当前参数的名称（name）是否存在于 model_weights 字典的键（keys）中 
         for name, param in self.named_parameters():
                 if name in model_weights.keys():
                     param.data.copy_(model_weights[name])
                     del model_weights[name]
                     print(f"Load {name} weight from {model_ckpt_}")
-
+        
+        # 检查并报告未加载的权重
         if len(model_weights.keys())!=0:
                 for k in model_weights.keys():
                     print('%s has not been successfully loaded!!!!!!!!!!!!!'%str(k))
