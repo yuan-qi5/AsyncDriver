@@ -586,11 +586,17 @@ LLAMA_START_DOCSTRING = r"""
 )
 class LlamaPreTrainedModel(PreTrainedModel):
     config_class = LlamaConfig
-    base_model_prefix = "model"
+    # 用于区分基础模型（base model）的权重和可能附加在基础模型之上的头部模型（head model）的权重
+    base_model_prefix = "model" 
+    # 梯度检查，只存储一部分中间激活值（检查点），减少显存占用，以计算换空间
     supports_gradient_checkpointing = True
-    _no_split_modules = ["LlamaDecoderLayer"]
+    # 包含了那些在进行某些类型的模型并行化时不应该被拆分的模块类的名称
+    _no_split_modules = ["LlamaDecoderLayer"]  
+    # 指定了在使用 model.to(device) 自动将模型及其所有参数和缓冲区移动到特定设备时，
+    # 哪些键对应的值不应该被自动移动
     _skip_keys_device_placement = "past_key_values"
 
+    # 定义了如何初始化模型中不同类型模块的层
     def _init_weights(self, module):
         std = self.config.initializer_range
         if isinstance(module, nn.Linear):
@@ -890,6 +896,7 @@ class LlamaModel(LlamaPreTrainedModel):
             if self.gradient_checkpointing and self.training:
 
                 def create_custom_forward(module):
+                    # * 称为“参数收集”（argument packing），它把所有额外的位置参数合并成一个元组 
                     def custom_forward(*inputs):
                         # None for past_key_value
                         return module(*inputs, past_key_value, output_attentions)
@@ -960,6 +967,8 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
     _keep_small_lr_modules = [
             'gameformer',
         ]
+    # adapters : 一种参数高效微调技术，核心思想是在预训练模型中插入一些小型的、可训练的模块（即适配器），
+    # 在微调时只更新这些适配器的参数，而保持预训练模型的主体参数冻结。
     adapter_name_list = _keep_in_fp32_modules
 
     def __init__(self, config):
