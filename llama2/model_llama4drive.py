@@ -1070,7 +1070,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
                 if 'lora' in name:
                     param.requires_grad = True
 
-    # 
+    # 重初始化参数
     def reinit_weights(self):
         init_module_list = [name for name in self.adapter_name_list if hasattr(self, name)]
         for name in init_module_list:
@@ -1086,8 +1086,10 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
                     module.flatten_parameters()
                 # else:
                 #     print(f"Module {module} has no reset_parameters or _reset_parameters method")
-        
+
+    # 
     def resume_from_checkpoint(self ,ckpt_dir, gameformer_ckpt=False):
+        # 加载 gameformer 权重
         if gameformer_ckpt:
             weights = torch.load(ckpt_dir, map_location=torch.device('cpu'))
 
@@ -1128,7 +1130,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
         self.map_encoder.to(self.model.device)
         self.to(self.model.device)
 
-    # 
+    
     def reload_mapencoder_weights(self):
         self.reinit_weights()
         if self.config.mapEncoder_pretrain_weight is None:
@@ -1136,6 +1138,8 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
         pretrain_weights = torch.load(self.config.mapEncoder_pretrain_weight, map_location=torch.device('cpu'))
         self.gameformer.load_state_dict(pretrain_weights, strict=False)
         self.gameformer.to(self.model.device)
+        
+        # 存储编码器参数从而只加载编码器
         processed_weights = OrderedDict()
         for key, value in pretrain_weights.items():
             if key.startswith("encoder."):
@@ -1241,7 +1245,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
         if not inference:
             ego_future_gt = ego_future
             neighbors_future_gt = neighbors_future
-            neighbors_future_valid_gt = torch.ne(neighbors_future_gt[..., :2], 0)
+            neighbors_future_valid_gt = torch.ne(neighbors_future_gt[..., :2], 0) # 去掉填充值
 
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
