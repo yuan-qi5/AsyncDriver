@@ -512,6 +512,8 @@ def main():
     target_column_name = 'target'
     map_column_name = 'map_info'
 
+    # 把一个字符串 prompt 处理成模型可直接用的数据结构，并可选地在结尾添加 <eos> token，同时生成
+    # 相应的 attention mask 和 labels
     def tokenize(prompt, cutoff_len=data_args.block_size, padding=False, add_eos_token=True):
         result = tokenizer(
             prompt,
