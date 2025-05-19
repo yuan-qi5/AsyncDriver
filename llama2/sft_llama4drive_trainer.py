@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from itertools import chain
 from datasets import disable_caching
 
-disable_caching()
+disable_caching()  # 禁用缓存功能（下载数据集还是对数据集进行处理，都不会创建或使用缓存文件）
 from typing import Optional,List,Union,Any
 import datasets
 import evaluate
@@ -49,17 +49,17 @@ import transformers
 from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 from transformers import (
-    MODEL_FOR_CAUSAL_LM_MAPPING,
-    AutoConfig,
-    AutoTokenizer,
-    TrainerCallback,
-    TrainerState,
-    TrainerControl,
-    HfArgumentParser,
-    TrainingArguments,
-    BitsAndBytesConfig,
-    is_torch_tpu_available,
-    set_seed,
+    MODEL_FOR_CAUSAL_LM_MAPPING, # 
+    AutoConfig, # 用于自动加载预训练模型的配置信息
+    AutoTokenizer, # 用于自动加载与预训练模型相匹配的分词器
+    TrainerCallback, # 基类，允许用户创建自定义的回调函数
+    TrainerState, # 数据类（dataclass），用于存储 Trainer 在训练过程中的当前状态信息
+    TrainerControl, # 数据类（dataclass），用于在回调函数中像 Trainer 发出指令，以控制训练流程
+    HfArgumentParser, # Hugging Face 提供的参数解析器，对 Python 内置 argparse 模块的封装与扩展
+    TrainingArguments, # 数据类，用于封装 Trainer API 所需的所有训练参数和配置
+    BitsAndBytesConfig, # 用于配置模型量化参数的类，尤其是与 bitsandbtypes 库集成使用
+    is_torch_tpu_available, # 检查当前环境是否支持并配置了 TPU
+    set_seed, # 设置随机种子
 )
 from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils import check_min_version, send_example_telemetry, PaddingStrategy
