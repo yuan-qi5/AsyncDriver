@@ -68,6 +68,7 @@ from llama2.model_llama4drive import LlamaForCausalLM, ModelWithLoRA
 from llama2.trainer import CustomTrainerLLAMA4Drive as Trainer
 from nuplan.planning.training.preprocessing.feature_collate import _batch_abstract_features
 
+# 获取日志记录器（logger）
 logger = logging.getLogger(__name__)
 
 MODEL_CONFIG_CLASSES = list(MODEL_FOR_CAUSAL_LM_MAPPING.keys())
@@ -120,7 +121,7 @@ class ModelArguments:
     )
     small_lr: Optional[float] = field(
         default=-1.0, metadata={"help": "Use small learning rate for map encoder"}
-    )
+    )  # default -1.0 类似哨兵值
     lora_r: Optional[int] = field(default=16)
     lora_alpha: Optional[int] = field(default=32)
     target_modules: Optional[str] = field(
@@ -130,6 +131,8 @@ class ModelArguments:
             "For example, ['q', 'v'] or '.*decoder.*(SelfAttention|EncDecAttention).*(q|v)$' "
         },
     )
+    # 基于 python 的分词器对于大规模数据集处理速度较慢
+    # fast tokenizer : 使用 rust 重新实现的分词器 
     use_fast_tokenizer: bool = field(
         default=True,
         metadata={"help": "Whether to use one of the fast tokenizer (backed by the tokenizers library) or not."},
@@ -158,7 +161,8 @@ class ModelArguments:
             )
         },
     )
-    
+
+    # 使用 lora 的层
     layers_to_transform: Optional[str] = field(
         default=None,
         metadata={
@@ -235,6 +239,7 @@ class DataTrainingArguments:
             )
         },
     )
+    # 加载数据时是否使用流式模式（streaming mode）
     streaming: bool = field(default=False, metadata={"help": "Enable streaming mode"})
     block_size: Optional[int] = field(
         default=None,
@@ -259,12 +264,15 @@ class DataTrainingArguments:
         default=None,
         metadata={"help": "The number of processes to use for the preprocessing."},
     )
+    # linebreaks : 换行符
+    # 取决于后续应用场景是否对换行符敏感
     keep_linebreaks: bool = field(
         default=True, metadata={"help": "Whether to keep line breaks when using TXT files or not."}
     )
 
     def __post_init__(self):
         if self.streaming:
+            # require_version 用于版本检查
             require_version("datasets>=2.0.0", "The streaming feature requires `datasets>=2.0.0`")
 
         if self.dataset_name is None and self.train_files is None and self.validation_files is None:
@@ -401,11 +409,16 @@ def main():
         tokenizer = AutoTokenizer.from_pretrained(model_args.model_name_or_path, **tokenizer_kwargs)
     # tokenizer.pad_token = tokenizer.eos_token
     tokenizer.pad_token_id = 0
+    # beginning-of-sequence / start-of-sequence, BOS/SOS
     tokenizer.bos_token_id = 1
+    # end-of-sequence, EOS
     tokenizer.eos_token_id = 2
+    # padding_side : 指定当序列长度不一时，填充标记添加在左边还是右边 
+    # 对于解码器模型，通常进行左填充；其余类型只需保持一致性即可
     tokenizer.padding_side = "left"
 
     if model_args.add_special_tokens is not None:
+        # 分隔成列表方便后续处理
         additional_special_tokens = model_args.add_special_tokens.split(',')
         special_tokens = {
             'additional_special_tokens': additional_special_tokens
@@ -426,10 +439,13 @@ def main():
             r=model_args.lora_r,
             lora_alpha=model_args.lora_alpha,
             target_modules = list(model_args.target_modules.split(',')),
-            fan_in_fan_out = False,
+            fan_in_fan_out = False, # 用于控制 LoRA 注入的矩阵乘法权重更新方式，
+                                    # 决定 LoRA 插入点和数据流向的处理是否要 transpose
+                                    # Flase : fan_in --> fan_out
             lora_dropout=0.05,
-            inference_mode=False,
-            bias="none",
+            inference_mode=False, # 区分推理模式和训练模式
+            bias="none", # lora 训练过程中是否以及如何处理 bias，none 不训练，all 对所有 bias 训练
+                         # lora_only 只训练与 lora 插入点直接相关的 bias
             task_type="CAUSAL_LM",
             layers_to_transform=model_args.layers_to_transform
         )
@@ -441,6 +457,7 @@ def main():
 
 
     ################################z
+    # 量化设置
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_use_double_quant=True,
@@ -485,9 +502,11 @@ def main():
         model = prepare_model_for_int8_training(model)
     elif model_args.load_in_bits==4:
         model = prepare_model_for_kbit_training(model)
-
+    
+    # 重置模型中哪些参数是可训练的
     model.reset_trainable_param()
 
+    # 获取当前数据集的所有特征列名
     column_names = list(raw_datasets["train"].features)
     input_column_name = 'input'
     target_column_name = 'target'
