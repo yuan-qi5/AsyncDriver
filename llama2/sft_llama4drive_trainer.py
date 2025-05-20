@@ -534,23 +534,27 @@ def main():
 
         return result
 
+    
+    # 返回 map_info prompt 
     def generate_and_tokenize_prompt(data_point):
         input_text = data_point[input_column_name]
         # if 'Final Answer' not in input_text:
         #     input_text = data_point[input_column_name]
         # preprocess navigation instruction
+        # 左右方向互换
         if 'left' in input_text:
             input_text = input_text.replace('left', 'right')
         elif 'right' in input_text:
             input_text = input_text.replace('right', 'left')
+        # 对 ins_wo_stop 进行特殊处理
         if config.ins_wo_stop:
             pattern = r'Nevigation instructions:.*?\n\n'
             match = re.search(pattern, input_text)
             if match:
                 start_index = match.start()
                 end_index = match.end()
-                pre_text = input_text[:start_index+25]
-                pro_text = input_text[end_index-2:]
+                pre_text = input_text[:start_index+25] # 提取前缀
+                pro_text = input_text[end_index-2:] # 提取后缀
                 navigation_instruction = input_text[start_index+25:end_index-2].split('. ')
                 cmd_ls = []
                 dist_ls = []
@@ -576,7 +580,8 @@ def main():
                         dist_ls.append(dist)
                     else:
                         import pdb; pdb.set_trace()
-                
+
+                # 合并连续相同的动作
                 if not len(cmd_ls)==0:
                     cur_c = None
                     cur_d = 0
@@ -604,6 +609,8 @@ def main():
         input_text = input_text.replace('<map>','<map></map>')
         target_text = data_point[target_column_name]
         full_prompt = input_text + target_text
+        
+        # 判断是否存在 map_info 以及进一步处理
         try:
             map_info = data_point[map_column_name]
         except:
@@ -611,14 +618,17 @@ def main():
         if map_info is None or map_info == 'null':
             map_feats = None
             map_masks = None
+        # 从 map_info 中提取 input_dict 
         else:
-            map_info = np.load(map_info, allow_pickle=True)
+            map_info = np.load(map_info, allow_pickle=True) # np.load 加载 .npy 或 .npz 格式
+                                                            # allow_pickle 是否允许加载以 Python pickle
+                                                            # 协议序列化的数据，出于安全默认为 False
             if 'ego_v_a' in [k for k in map_info.keys()]:
                 input_dict = {
                     'ego_agent_past': map_info['ego_agent_past'], # history
                     'neighbor_agents_past': map_info['neighbor_agents_past'],
-                    'route_lanes': map_info['route_lanes'],
-                    'map_lanes': map_info['lanes'],
+                    'route_lanes': map_info['route_lanes'], # 规划路线上的车道
+                    'map_lanes': map_info['lanes'], # 全图车道
                     'map_crosswalks': map_info['crosswalks'],
                     'ego_future': map_info['ego_agent_future'], # 8s, 80 points -> 10s, 100points
                     'neighbors_future': map_info['neighbor_agents_future'],
@@ -630,7 +640,7 @@ def main():
                     'ego_lane_flag': map_info['ego_lane_flag'],
                 }
                 traffic_light_array = np.array([0,0,0,0]) #red, yellow, green, unknown
-                traffic_light = np.unique(map_info['traffic_light'])
+                traffic_light = np.unique(map_info['traffic_light']) # np.unique 找出数组中的唯一值
                 if len(traffic_light) > 1:
                     traffic_light = np.array(['UNKNOWN'])
                 if traffic_light == 'RED':
@@ -652,14 +662,18 @@ def main():
                     'ego_future': map_info['ego_agent_future'],
                     'neighbors_future': map_info['neighbor_agents_future'],
                 }
+            # 统一格式转换为 tensor
             for k,v in input_dict.items():
                 input_dict[k] = torch.from_numpy(v).to(torch.float32)
+        
         if model_args.down_sample_type != 'none':
             assert model_args.down_sample_type in ['trunk', 'resample']
             assert model_args.feature_len != input_dict['ego_future'].shape[0]
+            # trunk : 直接裁剪
             if model_args.down_sample_type == 'trunk':
                 input_dict['ego_future'] = input_dict['ego_future'][:model_args.feature_len, :]
                 input_dict['neighbors_future'] = input_dict['neighbors_future'][:, :model_args.feature_len, :]
+            # resample : 均匀间隔抽取
             elif model_args.down_sample_type == 'resample':
                 assert input_dict['ego_future'].shape[0] % model_args.feature_len == 0
                 input_dict['ego_future'] = input_dict['ego_future'][
@@ -669,13 +683,19 @@ def main():
         tokenized_full_prompt = tokenize(full_prompt, add_eos_token=True)
         tokenized_input_text = tokenize(input_text, add_eos_token=True)
 
+        # 生成输入-输出对的标签
         input_text_len = len(tokenized_input_text["input_ids"])
+        # -100 是 PyTorch 的 CrossEntropyLoss 的 ignore_index，告诉损失函数这些位置不算 loss
         tokenized_full_prompt["labels"] = [-100] * input_text_len + tokenized_full_prompt["labels"][input_text_len:]
+        
         if map_info is not None:
             tokenized_full_prompt.update(input_dict)
 
         return tokenized_full_prompt
 
+    # main_process_first 主要用于解决分布式训练环境中数据处理协调问题，确保先执行主进程，
+    # 其他进程暂停并等待
+    # 参数 desc 是描述文本，用于日志记录
     with training_args.main_process_first(desc="dataset map tokenization"):
         if model_args.dataset_cache is not None:
             try:
@@ -683,11 +703,13 @@ def main():
                 tokenized_datasets = load_from_disk(model_args.dataset_cache)
                 print(f"!!!!!!!!!!  ----------------- Loading dataset from {model_args.dataset_cache}")
             except FileNotFoundError:
+            # .map() : HuggingFace datasets 库中数据映射方法，用于对数据集里每一条数据进行
+            # 批量处理或转换以生成一个新的数据集
                 tokenized_datasets = raw_datasets.map(
                     generate_and_tokenize_prompt,
-                    batched=False,
-                    remove_columns=column_names,
-                    num_proc=32
+                    batched=False,  # 每次 map 只处理一条数据
+                    remove_columns=column_names, # 处理后删除原始多余字段
+                    num_proc=32  # 多进程加速处理
                 )
                 tokenized_datasets.save_to_disk(model_args.dataset_cache)
                 logging.info(f"Saving dataset to {model_args.dataset_cache}")
@@ -699,6 +721,7 @@ def main():
                     num_proc=32
                 )
 
+    # 确定用于分词和后续模型输入的最大序列长度
     if data_args.block_size is None:
         block_size = tokenizer.model_max_length
         if block_size > 2048:
@@ -706,14 +729,15 @@ def main():
     else:
         block_size = min(data_args.block_size, tokenizer.model_max_length)
 
+    # 训练集子集裁剪、随机样本内容检查和乱序处理
     if training_args.do_train:
         train_dataset = tokenized_datasets["train"]
         if data_args.max_train_samples is not None:
             max_train_samples = min(len(train_dataset), data_args.max_train_samples)
-            train_dataset = train_dataset.select(range(max_train_samples))
+            train_dataset = train_dataset.select(range(max_train_samples)) # select(range(n)) 是 HuggingFace 数据集的高效子集截取方式
         for index in random.sample(range(len(train_dataset)), 3):
             logger.info(f"Sample {index} of the training set, has {len(train_dataset[index]['attention_mask'])} token.")
-        train_dataset = train_dataset.shuffle(seed=training_args.seed)
+        train_dataset = train_dataset.shuffle(seed=training_args.seed)  # 防止模型训练时样本顺序 bias
 
     if training_args.do_eval:
         eval_dataset = tokenized_datasets["validation"]
@@ -737,13 +761,13 @@ def main():
         #     return metric.compute(predictions=preds, references=labels)
         def compute_metrics(eval_preds):
             preds, labels = eval_preds
-            labels = labels[:, 1:].reshape(-1)
+            labels = labels[:, 1:].reshape(-1) # 只考虑 target 输出部分，不考虑输入部分
             preds = np.ones_like(labels)
             # preds = preds[:, :-1].reshape(-1)
             return metric.compute(predictions=preds, references=labels)
 
     # Initialize our Trainer
-
+    # Trainer 是 HuggingFace Transformers 提供的高阶训练封装器
     trainer = Trainer(
         model=model,
         args=training_args,
@@ -751,6 +775,8 @@ def main():
         eval_dataset=eval_dataset if training_args.do_eval else None,
         tokenizer=tokenizer,
         # Data collator will default to DataCollatorWithPadding, so we change it.
+        # Data collator（数据收集器/整理器），用于在 DataLoader 每次生成 batch 时，把一组（通常是不等长的）
+        # 样本打包成等长 batch，并自动进行必要的补齐（padding）、mask、格式转换等
         data_collator=transformers.DataCollatorForSeq2Seq(
             tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
         ),
@@ -770,9 +796,11 @@ def main():
         else:
             checkpoint=None
         
+        # torch.compile() 是 Pytorch 2.0 的一项新特性，用于对模型进行动态图编译加速
         if torch.__version__ >= "2" and sys.platform != "win32":
             model = torch.compile(model)
-        
+
+        # 在不加载预训练权重情况下进行权重初始化
         if (training_args.resume_from_checkpoint is None):
             for module in model.gameformer.modules():
                 if hasattr(module, '_reset_parameters'):
@@ -788,6 +816,7 @@ def main():
                     module.reset_parameters()
                 if hasattr(module, 'flatten_parameters'):
                     module.flatten_parameters()
+        # 初始化 adapter fusion
         if config.adapter_fusion:
             for module in model.gameformer.modules():
                 if isinstance(module, AdaptiveBlock):
@@ -797,7 +826,8 @@ def main():
             model.resume_from_checkpoint(config.gameformer_ckpt, gameformer_ckpt=True)
         if config.lora_ckpt is not None:
             model.resume_lora_from_checkpoint(config.lora_ckpt)
-        
+
+        # 训练模型 : trainer.train()
         if checkpoint is None:
             train_result = trainer.train(resume_from_checkpoint=None)
         else:
@@ -805,6 +835,8 @@ def main():
                 train_result = trainer.train(resume_from_checkpoint=checkpoint)
             else:
                 train_result = trainer.train(resume_from_checkpoint=None)
+        
+        # 保存当前模型的全部参数以及分词器和配置文件到指定路径
         trainer.save_model()  # Saves the tokenizer too for easy upload
 
         metrics = train_result.metrics
@@ -813,9 +845,12 @@ def main():
             data_args.max_train_samples if data_args.max_train_samples is not None else len(train_dataset)
         )
         metrics["train_samples"] = min(max_train_samples, len(train_dataset))
-
+       
+        # 记录并保存训练指标
         trainer.log_metrics("train", metrics)
         trainer.save_metrics("train", metrics)
+        
+        # 保存训练过程中的完整训练状态以用于断点续训（resume training） 
         trainer.save_state()
     else:
         # checkpoint = get_last_checkpoint(training_args.output_dir)
@@ -834,11 +869,14 @@ def main():
         if not config.enable_lora:
             if training_args.resume_from_checkpoint is not None:
                 model.resume_from_checkpoint(training_args.resume_from_checkpoint)
-        
+
+        # 评估模型，在 eval_dataset 进行一次完整的验证集评测
         metrics = trainer.evaluate()
 
         max_eval_samples = data_args.max_eval_samples if data_args.max_eval_samples is not None else len(eval_dataset)
         metrics["eval_samples"] = min(max_eval_samples, len(eval_dataset))
+        
+        # perplexity 衡量语言模型好坏， perplexity = exp(eval_loss) 
         try:
             perplexity = math.exp(metrics["eval_loss"])
         except OverflowError:
