@@ -12,21 +12,55 @@ import numpy as np
 
 import torch
 import torch.nn as nn
-from packaging import version
+from packaging import version # 常用于检查版本号
 from typing import Any, Dict, List, Optional, Tuple, Union
 from torch.utils.data import RandomSampler
 import torch.distributed as dist
 
 from transformers import Trainer
+# nested_detach(tensors) : 递归地将嵌套结构中的张量从计算图中分离，常用于去掉梯度信息、保存推理结果
+# get_parameter_names(model, forbidden_layer_types) : 获取模型中所有参数名字，并且可以排除特定层类型
+# （forbidden_layer_types）的参数，在设置优化器时很有用         
 from transformers.trainer_pt_utils import nested_detach, get_parameter_names
+
+# is_sagemaker_mp_enabled : 检查是否启用 AWS SageMaker 分布式模型并行环境
+# is_accelerate_available : 检查时否安装 accelerate 库，accelerate 时 HuggingFace 的一个高效分布式训练工具
+# is_torch_tpu_available : 检查当前环境中是否有 TPU 可用                         
 from transformers.utils import is_sagemaker_mp_enabled, is_accelerate_available, is_torch_tpu_available
+
+# deepspeed_init(trainer, num_training_steps, resume_from_checkpoint) : 初始化 DeepSpeed 引擎
+# deepspeed_load_checkpoints(trainer, checkpoint_path) : 使用 DeepSpeed 加载检查点
 from transformers.integrations.deepspeed import deepspeed_init, deepspeed_load_checkpoint, is_deepspeed_available
+
+# TrainerState : 数据类，用于存储和传递训练过程中的状态信息
 from transformers.trainer_callback import TrainerState
+
+# has_length(dataset) : 检查给定数据集对象是否具有 __len__ 方法
+# speed_metrics(split, start_time, num_sample=None, num_steps=None) : 计算训练或推理过程的速度指标，如每秒样本数、每秒步数
+#               split 参数通常为 'train'、'eval'或 'predict'
+# ShardedDDPOption : 枚举类型，分布式训练中 Sharded Data Parallel (分片数据并行处理) 的配置选项
+# HPSearchBackend : 枚举类型，超参数搜索的后端类型，如 Optuna、RayTune 等，Trainer 可与这些后端集成以自动进行超参数调优
+# TrainOutput : 数据类，用于封装 Trainer.train() 方法的输出结果
+# PREFIX_CHECKPOINT_DIR : 保存 checkpoint 目录的前缀字符串
 from transformers.trainer_utils import has_length, speed_metrics, ShardedDDPOption, HPSearchBackend, TrainOutput, PREFIX_CHECKPOINT_DIR
+
+# get_model_param_count(model, trainable_only=False) : 统计模型的参数数量（分可训练和不可训练参数），用于模型规模分析
+# get_dataloader_sampler(dataloader) : 获取 DataLoader 对应的采样器（sampler），如顺序、随机或分布式采样
+# reissue_pt_warnings(caught_warnings) : 重新发出 PyTorch 的警告（通常在多进程/分布式下某些警告容易丢失，用于确保警告可见） 
 from transformers.trainer_pt_utils import get_model_param_count, get_dataloader_sampler, reissue_pt_warnings
+
+# hp_oarams : 集成超参数日志记录功能
 from transformers.integrations import hp_params
+ 
+# is_torch_less_than_1_11 : 检查 PyTorch 版本是否小于 1.11，有时用于兼容性处理
+# ALL_LAYERNORM_LAYERS : 所有 LayerNorm 层类型的元组，常用于参数筛选
 from transformers.pytorch_utils import is_torch_less_than_1_11, ALL_LAYERNORM_LAYERS
+
+# ParallelMode : 枚举类型，表示不同的分布式训练模型
 from transformers.training_args import ParallelMode
+
+# DebugOption : 枚举类型，Trainer 的 debug 调试选项
+# DebugUnderflowOverflow : 用于监控训练过程中数值的上溢/下溢问题，帮助调试梯度异常等
 from transformers.debug_utils import DebugOption, DebugUnderflowOverflow
 
 if is_sagemaker_mp_enabled():
